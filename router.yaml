@@ -1,0 +1,66 @@
+# Routing configuration. Reviewed like code: providers, the aliases clients
+# use, and what every model costs. Keys are *named* here (api_key_env) and
+# read from the environment at start; no secret belongs in this file.
+#
+# The `fake` provider is the deterministic upstream from tests/fakes, which the
+# compose file runs as a service, so the whole system can be exercised with no
+# account anywhere. Replace or add real providers as needed.
+
+providers:
+  - name: fake
+    kind: openai
+    base_url: http://fake-upstream:9000/v1
+    pricing:
+      fake-small: { input_per_1m: 0, output_per_1m: 0 }
+      fake-large: { input_per_1m: 0, output_per_1m: 0 }
+
+  - name: openai
+    kind: openai
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    pricing:
+      gpt-4o-mini: { input_per_1m: 0.15, output_per_1m: 0.60 }
+      gpt-4o: { input_per_1m: 2.50, output_per_1m: 10.00 }
+
+  - name: anthropic
+    kind: anthropic
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+    pricing:
+      claude-haiku-4-5-20251001: { input_per_1m: 1.00, output_per_1m: 5.00 }
+      claude-sonnet-5: { input_per_1m: 3.00, output_per_1m: 15.00 }
+
+routes:
+  # The demo route: served entirely by the fake upstream.
+  - alias: demo
+    strategy: round_robin
+    candidates:
+      - { provider: fake, model: fake-small }
+      - { provider: fake, model: fake-large }
+
+  # Cheapest capable model first, with a fallback across vendors.
+  - alias: fast
+    strategy: cheapest
+    fallback: true
+    max_retries: 1
+    candidates:
+      - { provider: openai, model: gpt-4o-mini }
+      - { provider: anthropic, model: claude-haiku-4-5-20251001 }
+
+  # Whichever has been answering fastest lately.
+  - alias: smart
+    strategy: least_latency
+    fallback: true
+    max_retries: 2
+    candidates:
+      - { provider: anthropic, model: claude-sonnet-5 }
+      - { provider: openai, model: gpt-4o }
+
+breaker:
+  failure_threshold: 5
+  recovery_timeout_s: 30
+  half_open_max_calls: 1
+
+limits:
+  requests_per_minute: 60
+  burst: 20

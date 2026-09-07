@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  UV_FROZEN: "1"
+
+jobs:
+  lint:
+    name: Lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --extra dev
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+
+  test:
+    name: Tests (${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --extra dev
+      - run: uv run pytest -q
+      - name: The app starts with no provider credentials and no admin token
+        run: |
+          uv run python - <<'PY'
+          import os
+          from fastapi.testclient import TestClient
+          from model_router.api.app import create_app
+          from model_router.config import Settings
+          os.environ.pop("ADMIN_TOKEN", None)
+          settings = Settings(ENV="test", DATABASE_URL="sqlite:///./ci.db", ROUTER_CONFIG="router.yaml", _env_file=None)
+          with TestClient(create_app(settings)) as client:
+              assert client.get("/health").status_code == 200
+              assert client.get("/ready").json()["ready"] is True
+              assert client.post("/admin/tenants", json={"name": "x"}).status_code == 503
+              assert client.post("/v1/chat/completions", json={"model": "demo", "messages": [{"role": "user", "content": "hi"}]}).status_code == 401
+          print("boots closed: admin 503, completions 401")
+          PY
+      - name: Migrations match the models
+        run: |
+          uv run python - <<'PY'
+          from sqlalchemy import create_engine, inspect
+          from model_router import db
+          url = "sqlite:///./mig.db"
+          db.init_schema(url)
+          engine = create_engine(url)
+          live = {t: {c["name"] for c in inspect(engine).get_columns(t)} for t in inspect(engine).get_table_names() if t != "alembic_version"}
+          declared = {t.name: {c.name for c in t.columns} for t in db.Base.metadata.sorted_tables}
+          assert live == declared, (live, declared)
+          print("migrations and models agree on", sorted(live))
+          PY
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --extra dev
+      - run: uv run bandit -q -r src -ll
+      - run: uv export --no-dev --no-hashes -o /tmp/req.txt && uv run pip-audit -r /tmp/req.txt
+      - name: No secret-bearing file is tracked
+        run: test -z "$(git ls-files | grep -E '(^|/)\.env$|\.pem$|\.key$')"
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  container:
+    name: Container
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t model-router:ci .
+      - name: Runs as non-root and validates its configuration
+        run: |
+          test "$(docker run --rm --entrypoint id model-router:ci -u)" = "10001"
+          docker run --rm model-router:ci model-router check
+      - name: The whole system, key-free: router in front of the fake upstream
+        run: |
+          export ADMIN_TOKEN=ci-admin-token
+          docker compose up -d --build
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/ready >/dev/null 2>&1 && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8080/ready | tee ready.json
+          grep -q '"ready":true' ready.json
+          key=$(curl -fsS -X POST http://127.0.0.1:8080/admin/tenants -H "X-Admin-Token: $ADMIN_TOKEN" \
+                -H 'Content-Type: application/json' -d '{"name":"ci","monthly_budget_usd":"1"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["api_key"])')
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/v1/chat/completions)" = "401"
+          curl -fsS -D headers.txt -X POST http://127.0.0.1:8080/v1/chat/completions \
+               -H "Authorization: Bearer $key" -H 'Content-Type: application/json' \
+               -d '{"model":"demo","messages":[{"role":"user","content":"hello router"}]}' | tee reply.json
+          grep -q '"echo: hello router"' reply.json
+          grep -qi '^x-router-provider: fake' headers.txt
+          curl -fsS http://127.0.0.1:8080/metrics | grep -q 'router_requests_total{.*status="ok"'
+          docker compose logs router | tail -5
+          docker compose down -v

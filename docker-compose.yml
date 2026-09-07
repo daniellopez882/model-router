@@ -1,0 +1,38 @@
+# A complete, key-free deployment: the router in front of the deterministic
+# fake upstream. `docker compose up -d` then follow the README's quick start.
+#
+#   ADMIN_TOKEN=change-me docker compose up -d --build
+
+services:
+  fake-upstream:
+    build: .
+    command: ["python", "-m", "model_router.fake_upstream"]
+    environment:
+      FAKE_UPSTREAM_PORT: "9000"
+    ports:
+      - "127.0.0.1:9000:9000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9000/health', timeout=2).status == 200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  router:
+    build: .
+    depends_on:
+      fake-upstream:
+        condition: service_healthy
+    environment:
+      ENV: production
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in the environment}
+      LOG_LEVEL: INFO
+      # Real providers are optional; leave unset and only the `demo` route works.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - router-data:/data
+    ports:
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  router-data:
