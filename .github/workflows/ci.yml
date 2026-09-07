@@ -98,7 +98,7 @@ jobs:
         run: |
           test "$(docker run --rm --entrypoint id model-router:ci -u)" = "10001"
           docker run --rm model-router:ci model-router check
-      - name: The whole system, key-free: router in front of the fake upstream
+      - name: "The whole system, key-free: router in front of the fake upstream"
         run: |
           export ADMIN_TOKEN=ci-admin-token
           docker compose up -d --build
