@@ -10,11 +10,6 @@ instead of a vendor's model; the router picks a provider by policy, retries
 and falls back on the failures that deserve it, refuses the ones that do not,
 and charges every request to a tenant with a budget.
 
-It is one of five components of an agent platform — the model router, an
-[agent sandbox](https://github.com/daniellopez882/agent-sandbox), an
-[agent control plane](https://github.com/daniellopez882/agent-control-plane),
-an [evaluation harness](https://github.com/daniellopez882/agent-evals) and an
-[observability service](https://github.com/daniellopez882/agent-observability)
 — each of which runs on its own.
 
 ## At a glance
