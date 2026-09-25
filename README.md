@@ -10,8 +10,6 @@ instead of a vendor's model; the router picks a provider by policy, retries
 and falls back on the failures that deserve it, refuses the ones that do not,
 and charges every request to a tenant with a budget.
 
-— each of which runs on its own.
-
 ## At a glance
 
 | | |
