@@ -60,7 +60,7 @@ sequenceDiagram
     G->>G: key → tenant · token bucket · month spend < budget
     G-->>C: 401 / 403 / 429 Retry-After / 402 on failure
     G->>R: request
-    R->>R: alias → candidates, ordered by strategy; skip open breakers
+    R->>R: alias → candidates, ordered by strategy — skip open breakers
     R->>A: chat (retry ≤ max_retries on retryable failures only)
     A-->>R: 503
     R->>B: fall back
